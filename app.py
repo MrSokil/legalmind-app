@@ -1,5 +1,7 @@
 import streamlit as st
 import os
+import requests
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from groq import Groq
 from docx import Document
@@ -8,10 +10,12 @@ from io import BytesIO
 
 load_dotenv()
 
-# Налаштування сторінки для мобільних пристроїв
+# Налаштування сторінки
 st.set_page_config(page_title="LegalMind", page_icon="⚖️", layout="centered")
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+# Отримання ключа (з .env або з Secrets Streamlit)
+api_key = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY")
+client = Groq(api_key=api_key)
 
 # --- ФУНКЦІЇ ОБРОБКИ ---
 def read_file(uploaded_file):
@@ -26,6 +30,19 @@ def read_file(uploaded_file):
         return "\n".join([page.extract_text() for page in reader.pages])
     return None
 
+def read_url(url):
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        # Видаляємо зайві елементи
+        for script_or_style in soup(["script", "style", "header", "footer", "nav"]):
+            script_or_style.decompose()
+        return soup.get_text(separator=' ', strip=True)
+    except Exception as e:
+        st.error(f"Не вдалося зчитати посилання: {e}")
+        return None
+
 def create_docx(analysis_text):
     doc = Document()
     doc.add_heading('ЮРИДИЧНИЙ ЗВІТ LEGALMIND', 0)
@@ -34,47 +51,10 @@ def create_docx(analysis_text):
     doc.save(bio)
     return bio.getvalue()
 
-# --- ІНТЕРФЕЙС STREAMLIT ---
-st.title("⚖️ LegalMind: Ваш AI-Юрист")
-st.markdown("---")
-
-uploaded_file = st.file_uploader("Завантажте документ (PDF, DOCX, TXT)", type=['pdf', 'docx', 'txt'])
-
-if uploaded_file is not None:
-    with st.spinner('LegalMind аналізує документ...'):
-        content = read_file(uploaded_file)
-        
-        if content:
-            # Запит до Groq
-            chat_completion = client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": "Ти — старший юрист. Проаналізуй документ: суть, права/обов'язки, ризики та рекомендації українською мовою."},
-                    {"role": "user", "content": content}
-                ],
-                model="llama-3.1-8b-instant",
-            )
-            analysis = chat_completion.choices[0].message.content
-            
-            # Відображення результату
-            st.subheader("Результат аналізу")
-            st.markdown(analysis)
-            
-            # Генерація та завантаження DOCX
-            docx_file = create_docx(analysis)
-            st.download_button(
-                label="📥 Завантажити звіт у .docx",
-                data=docx_file,
-                file_name=f"LegalMind_Report_{uploaded_file.name}.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            )
-        else:
-            st.error("Помилка читання файлу.")
-
 # --- БІЧНА ПАНЕЛЬ (SIDEBAR) ---
 with st.sidebar:
     st.title("⚙️ Налаштування")
     
-    # Додаємо перемикач режимів
     mode = st.selectbox(
         "Оберіть режим аналізу:",
         [
@@ -85,7 +65,7 @@ with st.sidebar:
         ]
     )
     
-    st.info(f"Зараз активний режим: **{mode}**")
+    st.info(f"Активний режим: **{mode}**")
     
     if st.button("Очистити все"):
         st.rerun()
@@ -98,5 +78,51 @@ prompts = {
     "Загальна консультація": "Ти — універсальний юридичний радник. Проаналізуй текст та надай вичерпну відповідь на питання користувача, базуючись на законодавстві України."
 }
 
-# Коли викликаєте client.chat.completions.create, використовуйте prompt відповідно до вибору:
-# system_prompt = prompts[mode]
+# --- ІНТЕРФЕЙС STREAMLIT ---
+st.title("⚖️ LegalMind: Ваш AI-Юрист")
+st.markdown("---")
+
+# Вибір джерела даних
+source = st.radio("Джерело аналізу:", ["Файл", "Посилання"], horizontal=True)
+
+content = ""
+input_name = "document"
+
+if source == "Файл":
+    uploaded_file = st.file_uploader("Завантажте PDF, DOCX або TXT", type=['pdf', 'docx', 'txt'])
+    if uploaded_file:
+        content = read_file(uploaded_file)
+        input_name = uploaded_file.name
+else:
+    url_input = st.text_input("Вставте посилання на документ або статтю:")
+    if url_input:
+        content = read_url(url_input)
+        input_name = "url_content"
+
+# --- ПРОЦЕС АНАЛІЗУ ---
+if content:
+    if st.button("Почати аналіз"):
+        with st.spinner('LegalMind вивчає матеріал...'):
+            try:
+                chat_completion = client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": prompts[mode]},
+                        {"role": "user", "content": content}
+                    ],
+                    model="llama-3.1-8b-instant",
+                )
+                analysis = chat_completion.choices[0].message.content
+                
+                st.subheader("📋 Результат аналізу")
+                st.markdown(analysis)
+                
+                # Генерація звіту
+                docx_file = create_docx(analysis)
+                st.download_button(
+                    label="📥 Завантажити звіт у .docx",
+                    data=docx_file,
+                    file_name=f"LegalMind_{mode}_{input_name}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+            except Exception as e:
+                st.error(f"Помилка при запиті до ШІ: {e}")

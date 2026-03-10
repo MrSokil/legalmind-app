@@ -1,5 +1,7 @@
 streamlit
 groq
-python-dotenv
 python-docx
 pypdf
+python-dotenv
+requests
+beautifulsoup4
