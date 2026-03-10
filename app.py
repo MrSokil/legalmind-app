@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import requests
+import time
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from groq import Groq
@@ -16,6 +17,12 @@ st.set_page_config(page_title="LegalMind", page_icon="⚖️", layout="centered"
 # Отримання ключа
 api_key = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY")
 client = Groq(api_key=api_key)
+
+# --- ІНІЦІАЛІЗАЦІЯ СТАНУ (SESSION STATE) ---
+if 'analysis_result' not in st.session_state:
+    st.session_state.analysis_result = None
+if 'full_content' not in st.session_state:
+    st.session_state.full_content = ""
 
 # --- ФУНКЦІЇ ОБРОБКИ ---
 def read_file(uploaded_file):
@@ -51,8 +58,8 @@ def create_docx(analysis_text):
     return bio.getvalue()
 
 def analyze_long_text(full_text, mode_prompt):
-    # Розбиваємо текст на шматки по 12000 символів (щоб не перевищити ліміти)
-    chunk_size = 12000
+    # Використовуємо 8000 символів для балансу швидкості та лімітів
+    chunk_size = 8000
     chunks = [full_text[i:i + chunk_size] for i in range(0, len(full_text), chunk_size)]
     
     summaries = []
@@ -60,25 +67,35 @@ def analyze_long_text(full_text, mode_prompt):
     status_text = st.empty()
     
     for idx, chunk in enumerate(chunks):
-        status_text.text(f"Опрацювання частини {idx+1} з {len(chunks)}...")
+        status_text.info(f"⚡ Опрацювання частини {idx+1} з {len(chunks)}...")
         progress_bar.progress((idx + 1) / len(chunks))
         
-        response = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": "Ти — помічник юриста. Коротко випиши всі ключові факти, норми та деталі з цієї частини документа для подальшого аналізу."},
-                {"role": "user", "content": chunk}
-            ],
-            model="llama-3.1-8b-instant",
-        )
-        summaries.append(response.choices[0].message.content)
+        try:
+            response = client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": "Ти — помічник юриста. Випиши тезисно головне з цієї частини документа."},
+                    {"role": "user", "content": chunk}
+                ],
+                model="llama-3.1-8b-instant",
+            )
+            summaries.append(response.choices[0].message.content)
+            
+            # Пауза для безкоштовного тарифу (Rate Limit)
+            if idx < len(chunks) - 1:
+                status_text.warning("☕ Пауза 5 сек для стабільності лімітів...")
+                time.sleep(5)
+                
+        except Exception as e:
+            st.error(f"Помилка на частині {idx+1}: {e}")
+            break
     
-    status_text.text("Формування фінального висновку...")
+    status_text.success("✅ Всі частини прочитано! Формую фінальний звіт...")
     combined_context = "\n".join(summaries)
     
     final_response = client.chat.completions.create(
         messages=[
             {"role": "system", "content": mode_prompt},
-            {"role": "user", "content": f"Це зібрана інформація з усього документа. Проаналізуй її повністю:\n\n{combined_context}"}
+            {"role": "user", "content": f"Це зміст великого документа. Проаналізуй його повністю:\n\n{combined_context}"}
         ],
         model="llama-3.1-8b-instant",
     )
@@ -93,6 +110,8 @@ with st.sidebar:
     )
     st.info(f"Активний режим: **{mode}**")
     if st.button("Очистити все"):
+        st.session_state.analysis_result = None
+        st.session_state.full_content = ""
         st.rerun()
 
 prompts = {
@@ -108,46 +127,62 @@ st.markdown("---")
 
 source = st.radio("Джерело аналізу:", ["Файл", "Посилання"], horizontal=True)
 content = ""
-input_name = "document"
 
 if source == "Файл":
     uploaded_file = st.file_uploader("Завантажте документ", type=['pdf', 'docx', 'txt'])
     if uploaded_file:
         content = read_file(uploaded_file)
-        input_name = uploaded_file.name
 else:
     url_input = st.text_input("Вставте посилання:")
     if url_input:
         content = read_url(url_input)
-        input_name = "web_content"
 
+# Кнопка запуску
 if content:
-    if st.button("Почати повний аналіз"):
+    if st.button("🚀 Почати повний аналіз"):
         try:
             analysis = analyze_long_text(content, prompts[mode])
-            
-            st.subheader("📋 Результат аналізу")
-            st.markdown(analysis)
-
-            # Розумний пошук практики
-            if mode == "Судова практика та Позови":
-                st.markdown("---")
-                st.subheader("⚖️ Пошук аналогічних рішень")
-                search_gen = client.chat.completions.create(
-                    messages=[{"role": "user", "content": f"Сформуй короткий пошуковий запит (3-5 слів) для реєстру судових рішень на основі цього: {analysis[:500]}"}],
-                    model="llama-3.1-8b-instant",
-                )
-                query = search_gen.choices[0].message.content.strip().replace('"', '')
-                search_url = f"https://www.google.com/search?q=site:reyestr.court.gov.ua+{query.replace(' ', '+')}"
-                st.link_button(f"🔍 Знайти схожі рішення за запитом: {query}", search_url)
-
-            # Завантаження звіту
-            docx_file = create_docx(analysis)
-            st.download_button(
-                label="📥 Завантажити звіт у .docx",
-                data=docx_file,
-                file_name=f"LegalMind_{mode}.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            )
+            st.session_state.analysis_result = analysis
+            st.session_state.full_content = content
         except Exception as e:
             st.error(f"Сталася помилка: {e}")
+
+# --- ВИВІД РЕЗУЛЬТАТІВ ТА ЧАТ ---
+if st.session_state.analysis_result:
+    st.subheader("📋 Результат аналізу")
+    st.markdown(st.session_state.analysis_result)
+
+    # Пошук практики (тільки в цьому режимі)
+    if mode == "Судова практика та Позови":
+        search_query = st.session_state.analysis_result[:100].replace('\n', ' ')
+        search_url = f"https://www.google.com/search?q=site:reyestr.court.gov.ua+{search_query}"
+        st.link_button("🔍 Знайти схожі рішення в Реєстрі", search_url)
+
+    # Кнопка завантаження звіту
+    docx_file = create_docx(st.session_state.analysis_result)
+    st.download_button(
+        label="📥 Завантажити звіт у .docx",
+        data=docx_file,
+        file_name=f"LegalMind_{mode}.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+
+    st.markdown("---")
+    st.subheader("💬 Чат з документом")
+    
+    with st.form("chat_form"):
+        user_question = st.text_input("Поставте питання до тексту (наприклад: 'Хто відповідач?' або 'Який строк оренди?')")
+        submit_chat = st.form_submit_button("Запитати")
+        
+        if submit_chat and user_question:
+            with st.spinner('LegalMind шукає відповідь...'):
+                # Беремо частину тексту для контексту чату (щоб не перевищити 413)
+                context_for_chat = st.session_state.full_content[:12000]
+                chat_res = client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": "Ти — професійний юрист. Відповідай на питання користувача виключно на основі наданого тексту документа."},
+                        {"role": "user", "content": f"ДОКУМЕНТ:\n{context_for_chat}\n\nПИТАННЯ: {user_question}"}
+                    ],
+                    model="llama-3.1-8b-instant",
+                )
+                st.info(f"💡 **Відповідь:** {chat_res.choices[0].message.content}")
