@@ -122,10 +122,14 @@ with st.sidebar:
         st.rerun()
 
 prompts = {
-    "Аналіз договору": "Ти — провідний юрист. Виділи: 1) Критичні ризики, 2) Штрафні санкції, 3) Невідповідність ЦКУ/ГКУ. Дай рекомендації.",
-    "Судова практика та Позови": "Ти — адвокат. Виділи 'ФУНДАМЕНТ РІШЕННЯ': конкретні статті законів, ключові докази та Ratio Decidendi (головну правову тезу). Використовуй жирний шрифт.",
-    "Корпоративні документи": "Ти — спеціаліст з корпоративного права. Перевір документ на відповідність Закону про ТОВ.",
-    "Загальна консультація": "Ти — універсальний юридичний радник. Надай відповідь на основі законодавства України."
+    "Аналіз договору": "Ти — провідний юрист. Виділи: 1) Ризики, 2) Штрафи, 3) Статті ЦКУ. Дай поради.",
+    "Судова практика та Позови": """Ти — адвокат. Зроби аналіз за схемою:
+    1. ПРАВОВА БАЗА: Обов'язково перелічи конкретні статті (наприклад, ст. 328 ЦК, ст. 20 ГК тощо).
+    2. ФАКТИЧНІ ОБСТАВИНИ: Що сталося.
+    3. ОБГРУНТУВАННЯ: Чому суд прийняв таке рішення.
+    БЕЗ ПОСИЛАНЬ НА ЗАКОНОДАВСТВО АНАЛІЗ ВВАЖАЄТЬСЯ НЕПОВНИМ.""",
+    "Корпоративні документи": "Ти — спеціаліст з корпоративного права. Перевір на відповідність Закону про ТОВ.",
+    "Загальна консультація": "Ти — юридичний радник. Надай відповідь на основі законодавства України."
 }
 
 # --- ІНТЕРФЕЙС ---
@@ -161,22 +165,37 @@ if content:
         except Exception as e:
             st.error(f"Помилка: {e}")
 
-# --- ВИВІД РЕЗУЛЬТАТІВ ТА ЧАТ ---
+# --- ОНОВЛЕНА ЛОГІКА ВИВОДУ (КНОПКИ В СТОВПЧИК) ---
 if st.session_state.analysis_result:
     st.subheader("📋 Результат аналізу")
     st.markdown(st.session_state.analysis_result)
 
+    # Створюємо дві колонки для кнопок
     col1, col2 = st.columns(2)
+    
     with col1:
         docx_file = create_docx(st.session_state.analysis_result)
-        st.download_button("📥 Завантажити .docx", data=docx_file, file_name=f"LegalMind_{mode}.docx")
+        st.download_button(
+            label="📥 Завантажити .docx",
+            data=docx_file,
+            file_name=f"LegalMind_{mode}.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True
+        )
     
     with col2:
-        if st.session_state.search_query:
-            clean_q = st.session_state.search_query.replace(' ', '+')
-            url = f"https://www.google.com/search?q=site:reyestr.court.gov.ua+{clean_q}"
-            st.link_button(f"🔍 Схожі рішення: {st.session_state.search_query}", url)
-
+        if mode == "Судова практика та Позови" and st.session_state.search_query:
+            # Очищуємо запит від зайвих слів для URL
+            clean_q = st.session_state.search_query.split('\n')[0].replace('"', '').strip()
+            search_url = f"https://www.google.com/search?q=site:reyestr.court.gov.ua+{clean_q.replace(' ', '+')}"
+            
+            # Тільки назва дії на кнопці, без тексту від ШІ
+            st.link_button(
+                "🔍 Знайти схожі рішення", 
+                search_url, 
+                use_container_width=True
+            )
+            
     st.markdown("---")
     st.subheader("💬 Питання до документа")
     with st.form("chat_form"):
