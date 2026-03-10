@@ -60,8 +60,10 @@ def create_docx(analysis_text):
     return bio.getvalue()
 
 def analyze_long_text(full_text, mode_prompt):
-    chunk_size = 8000
+    # Зменшуємо до 5000 символів, щоб точно влізти в 6000 токенів Groq
+    chunk_size = 5000 
     chunks = [full_text[i:i + chunk_size] for i in range(0, len(full_text), chunk_size)]
+    
     summaries = []
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -69,28 +71,38 @@ def analyze_long_text(full_text, mode_prompt):
     for idx, chunk in enumerate(chunks):
         status_text.info(f"⚡ Опрацювання частини {idx+1} з {len(chunks)}...")
         progress_bar.progress((idx + 1) / len(chunks))
+        
         try:
             response = client.chat.completions.create(
                 messages=[
-                    {"role": "system", "content": "Ти — помічник юриста. Витягни головні тези, статті законів та факти з цієї частини."},
+                    {"role": "system", "content": "Ти — помічник юриста. Випиши тезисно головне з цієї частини документа."},
                     {"role": "user", "content": chunk}
                 ],
                 model="llama-3.1-8b-instant",
             )
             summaries.append(response.choices[0].message.content)
+            
+            # ПАУЗА: 7 секунд для стабільності на безкоштовному тарифі
             if idx < len(chunks) - 1:
-                time.sleep(5) # Пауза для лімітів Groq на безкоштовному тарифі
+                time.sleep(7) 
+                
         except Exception as e:
-            st.error(f"Помилка на частині {idx+1}: {e}")
-            break
+            if "rate_limit_exceeded" in str(e).lower():
+                status_text.warning("⚠️ Ліміт вичерпано. Пауза 15 секунд...")
+                time.sleep(15)
+                # Можна додати логіку повтору для цієї ж частини тут
+            else:
+                st.error(f"Помилка на частині {idx+1}: {e}")
+                break
     
-    status_text.success("✅ Всі частини прочитано! Формую фінальний звіт...")
+    status_text.success("✅ Всі частини прочитано! Формую фінальний висновку...")
     combined_context = "\n".join(summaries)
     
+    # Фінальний запит теж може бути великим, тому стискаємо combined_context якщо треба
     final_response = client.chat.completions.create(
         messages=[
             {"role": "system", "content": mode_prompt},
-            {"role": "user", "content": f"Проаналізуй зібрані дані та виділи головні тези:\n\n{combined_context}"}
+            {"role": "user", "content": f"Це зміст документа. Проаналізуй його:\n\n{combined_context[:15000]}"}
         ],
         model="llama-3.1-8b-instant",
     )
