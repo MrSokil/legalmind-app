@@ -23,6 +23,8 @@ if 'analysis_result' not in st.session_state:
     st.session_state.analysis_result = None
 if 'full_content' not in st.session_state:
     st.session_state.full_content = ""
+if 'search_query' not in st.session_state:
+    st.session_state.search_query = ""
 
 # --- ФУНКЦІЇ ОБРОБКИ ---
 def read_file(uploaded_file):
@@ -58,10 +60,8 @@ def create_docx(analysis_text):
     return bio.getvalue()
 
 def analyze_long_text(full_text, mode_prompt):
-    # Використовуємо 8000 символів для балансу швидкості та лімітів
     chunk_size = 8000
     chunks = [full_text[i:i + chunk_size] for i in range(0, len(full_text), chunk_size)]
-    
     summaries = []
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -69,22 +69,17 @@ def analyze_long_text(full_text, mode_prompt):
     for idx, chunk in enumerate(chunks):
         status_text.info(f"⚡ Опрацювання частини {idx+1} з {len(chunks)}...")
         progress_bar.progress((idx + 1) / len(chunks))
-        
         try:
             response = client.chat.completions.create(
                 messages=[
-                    {"role": "system", "content": "Ти — помічник юриста. Випиши тезисно головне з цієї частини документа."},
+                    {"role": "system", "content": "Ти — помічник юриста. Витягни головні тези, статті законів та факти з цієї частини."},
                     {"role": "user", "content": chunk}
                 ],
                 model="llama-3.1-8b-instant",
             )
             summaries.append(response.choices[0].message.content)
-            
-            # Пауза для безкоштовного тарифу (Rate Limit)
             if idx < len(chunks) - 1:
-                status_text.warning("☕ Пауза 5 сек для стабільності лімітів...")
-                time.sleep(5)
-                
+                time.sleep(5) # Пауза для лімітів Groq на безкоштовному тарифі
         except Exception as e:
             st.error(f"Помилка на частині {idx+1}: {e}")
             break
@@ -95,7 +90,7 @@ def analyze_long_text(full_text, mode_prompt):
     final_response = client.chat.completions.create(
         messages=[
             {"role": "system", "content": mode_prompt},
-            {"role": "user", "content": f"Це зміст великого документа. Проаналізуй його повністю:\n\n{combined_context}"}
+            {"role": "user", "content": f"Проаналізуй зібрані дані та виділи головні тези:\n\n{combined_context}"}
         ],
         model="llama-3.1-8b-instant",
     )
@@ -108,17 +103,17 @@ with st.sidebar:
         "Оберіть режим аналізу:",
         ["Аналіз договору", "Судова практика та Позови", "Корпоративні документи", "Загальна консультація"]
     )
-    st.info(f"Активний режим: **{mode}**")
     if st.button("Очистити все"):
         st.session_state.analysis_result = None
         st.session_state.full_content = ""
+        st.session_state.search_query = ""
         st.rerun()
 
 prompts = {
-    "Аналіз договору": "Ти — провідний юрист. Проаналізуй цей договір на предмет прихованих ризиків, термінів, штрафних санкцій та відповідності ЦКУ. Виділи критичні помилки.",
-    "Судова практика та Позови": "Ти — адвокат. Проаналізуй цей документ. Знайди слабкі місця в аргументації, перевір посилання на статті ЦПК/ГПК та запропонуй покращення на основі актуальної практики.",
-    "Корпоративні документи": "Ти — спеціаліст з корпоративного права. Перевір цей статут або протокол на відповідність закону про ТОВ, знайди ризики та помилки в процедурах.",
-    "Загальна консультація": "Ти — універсальний юридичний радник. Проаналізуй текст та надай відповідь на основі законодавства України."
+    "Аналіз договору": "Ти — провідний юрист. Виділи: 1) Критичні ризики, 2) Штрафні санкції, 3) Невідповідність ЦКУ/ГКУ. Дай рекомендації.",
+    "Судова практика та Позови": "Ти — адвокат. Виділи 'ФУНДАМЕНТ РІШЕННЯ': конкретні статті законів, ключові докази та Ratio Decidendi (головну правову тезу). Використовуй жирний шрифт.",
+    "Корпоративні документи": "Ти — спеціаліст з корпоративного права. Перевір документ на відповідність Закону про ТОВ.",
+    "Загальна консультація": "Ти — універсальний юридичний радник. Надай відповідь на основі законодавства України."
 }
 
 # --- ІНТЕРФЕЙС ---
@@ -137,51 +132,51 @@ else:
     if url_input:
         content = read_url(url_input)
 
-# Кнопка запуску
 if content:
     if st.button("🚀 Почати повний аналіз"):
         try:
             analysis = analyze_long_text(content, prompts[mode])
             st.session_state.analysis_result = analysis
             st.session_state.full_content = content
+            
+            # Генеруємо точний пошуковий запит через ШІ
+            if mode == "Судова практика та Позови":
+                s_gen = client.chat.completions.create(
+                    messages=[{"role": "user", "content": f"Сформуй 3-4 ключові слова (без зайвих знаків) для Google пошуку аналогічної судової практики на основі цього висновку: {analysis[:300]}"}],
+                    model="llama-3.1-8b-instant",
+                )
+                st.session_state.search_query = s_gen.choices[0].message.content.strip().replace('"', '')
         except Exception as e:
-            st.error(f"Сталася помилка: {e}")
+            st.error(f"Помилка: {e}")
 
 # --- ВИВІД РЕЗУЛЬТАТІВ ТА ЧАТ ---
 if st.session_state.analysis_result:
     st.subheader("📋 Результат аналізу")
     st.markdown(st.session_state.analysis_result)
 
-    # Пошук практики (тільки в цьому режимі)
-    if mode == "Судова практика та Позови":
-        search_query = st.session_state.analysis_result[:100].replace('\n', ' ')
-        search_url = f"https://www.google.com/search?q=site:reyestr.court.gov.ua+{search_query}"
-        st.link_button("🔍 Знайти схожі рішення в Реєстрі", search_url)
-
-    # Кнопка завантаження звіту
-    docx_file = create_docx(st.session_state.analysis_result)
-    st.download_button(
-        label="📥 Завантажити звіт у .docx",
-        data=docx_file,
-        file_name=f"LegalMind_{mode}.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    )
+    col1, col2 = st.columns(2)
+    with col1:
+        docx_file = create_docx(st.session_state.analysis_result)
+        st.download_button("📥 Завантажити .docx", data=docx_file, file_name=f"LegalMind_{mode}.docx")
+    
+    with col2:
+        if st.session_state.search_query:
+            clean_q = st.session_state.search_query.replace(' ', '+')
+            url = f"https://www.google.com/search?q=site:reyestr.court.gov.ua+{clean_q}"
+            st.link_button(f"🔍 Схожі рішення: {st.session_state.search_query}", url)
 
     st.markdown("---")
-    st.subheader("💬 Чат з документом")
-    
+    st.subheader("💬 Питання до документа")
     with st.form("chat_form"):
-        user_question = st.text_input("Поставте питання до тексту (наприклад: 'Хто відповідач?' або 'Який строк оренди?')")
-        submit_chat = st.form_submit_button("Запитати")
-        
-        if submit_chat and user_question:
+        user_q = st.text_input("Що саме уточнити в тексті?")
+        if st.form_submit_button("Запитати") and user_q:
             with st.spinner('LegalMind шукає відповідь...'):
-                # Беремо частину тексту для контексту чату (щоб не перевищити 413)
-                context_for_chat = st.session_state.full_content[:12000]
+                # Контекст для чату (перші 12000 символів для уникнення 413)
+                chat_context = st.session_state.full_content[:12000]
                 chat_res = client.chat.completions.create(
                     messages=[
-                        {"role": "system", "content": "Ти — професійний юрист. Відповідай на питання користувача виключно на основі наданого тексту документа."},
-                        {"role": "user", "content": f"ДОКУМЕНТ:\n{context_for_chat}\n\nПИТАННЯ: {user_question}"}
+                        {"role": "system", "content": "Ти — професійний юрист. Відповідай коротко і по суті на основі наданого тексту."},
+                        {"role": "user", "content": f"ТЕКСТ:\n{chat_context}\n\nПИТАННЯ: {user_q}"}
                     ],
                     model="llama-3.1-8b-instant",
                 )
