@@ -148,7 +148,7 @@ with st.sidebar:
         st.rerun()
     
     st.markdown("---")
-    st.subheader("📜 Вічна історія")
+    st.subheader("📜 Історія")
     
     conn = sqlite3.connect('legalmind_history.db')
     c = conn.cursor()
@@ -179,7 +179,7 @@ else:
     if url_input: content = read_url(url_input)
 
 if content:
-    if st.button("🚀 ПОЧАТИ РОЗУМНИЙ АНАЛІЗ", use_container_width=True):
+    if st.button("🚀 ПОЧАТИ АНАЛІЗ", use_container_width=True):
         try:
             with st.spinner('🔍 AI розпізнає документ та розробляє стратегію...'):
                 mode = auto_determine_mode(content)
