@@ -12,7 +12,7 @@ from io import BytesIO
 
 load_dotenv()
 
-# Налаштування сторінки
+# --- НАЛАШТУВАННЯ СТОРІНКИ ---
 st.set_page_config(page_title="LegalMind", page_icon="⚖️", layout="centered")
 
 # Отримання ключа
@@ -37,14 +37,6 @@ def save_to_history(title, result, content, query):
     conn.commit()
     conn.close()
 
-def get_history():
-    conn = sqlite3.connect('legalmind_history.db')
-    c = conn.cursor()
-    c.execute("SELECT title, result, content, query FROM history ORDER BY id DESC LIMIT 20")
-    rows = c.fetchall()
-    conn.close()
-    return rows
-
 def clear_db():
     if os.path.exists('legalmind_history.db'):
         os.remove('legalmind_history.db')
@@ -53,7 +45,7 @@ def clear_db():
 # Ініціалізація БД при запуску
 init_db()
 
-# --- ІНІЦІАЛІЗАЦІЯ СТАНУ ---
+# --- ІНІЦІАЛІЗАЦІЯ СТАНУ СЕСІЇ ---
 if 'analysis_result' not in st.session_state:
     st.session_state.analysis_result = None
 if 'full_content' not in st.session_state:
@@ -61,7 +53,7 @@ if 'full_content' not in st.session_state:
 if 'search_query' not in st.session_state:
     st.session_state.search_query = ""
 
-# --- ФУНКЦІЇ ОБРОБКИ ТЕКСТУ (БЕЗ ЗМІН) ---
+# --- ФУНКЦІЇ ОБРОБКИ ТЕКСТУ ---
 def read_file(uploaded_file):
     ext = os.path.splitext(uploaded_file.name)[1].lower()
     if ext == '.txt': return uploaded_file.read().decode("utf-8")
@@ -75,7 +67,8 @@ def read_file(uploaded_file):
 
 def read_url(url):
     try:
-        response = requests.get(url, timeout=10)
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, timeout=15, headers=headers)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         for s in soup(["script", "style", "header", "footer", "nav"]): s.decompose()
@@ -96,15 +89,21 @@ def auto_determine_mode(text_preview):
     try:
         response = client.chat.completions.create(
             messages=[
-                {"role": "system", "content": "Ти — юридичний аналітик. Визнач тип документа одним словом: 'Суд', 'Договір', 'Корпоратив' або 'Загальне'."},
+                {"role": "system", "content": "Ти — юридичний аналітик. Визнач тип документа. Відповідай ТІЛЬКИ ОДНИМ СЛОВОМ: 'Суд', 'Договір', 'Корпоратив' або 'Загальне'."},
                 {"role": "user", "content": text_preview[:3000]}
             ],
             model="llama-3.1-8b-instant",
         )
-        detected = response.choices[0].message.content.strip().replace('.', '')
-        mapping = {"Суд": "Судова практика та Позови", "Договір": "Аналіз договору", "Корпоратив": "Корпоративні документи"}
+        detected = response.choices[0].message.content.strip().replace('.', '').replace('"', '').replace("'", "")
+        mapping = {
+            "Суд": "Судова практика та Позови",
+            "Договір": "Аналіз договору",
+            "Корпоратив": "Корпоративні документи",
+            "Загальне": "Загальна консультація"
+        }
         return mapping.get(detected, "Загальна консультація")
-    except: return "Загальна консультація"
+    except:
+        return "Загальна консультація"
 
 def analyze_long_text(full_text, mode_prompt):
     chunk_size = 7500 
@@ -115,7 +114,7 @@ def analyze_long_text(full_text, mode_prompt):
         p_bar.progress((idx + 1) / len(chunks))
         try:
             response = client.chat.completions.create(
-                messages=[{"role": "system", "content": "Ти помічник юриста. Випиши головне."}, {"role": "user", "content": chunk}],
+                messages=[{"role": "system", "content": "Ти помічник юриста. Випиши головні факти та деталі."}, {"role": "user", "content": chunk}],
                 model="llama-3.1-8b-instant",
             )
             summaries.append(response.choices[0].message.content)
@@ -132,45 +131,34 @@ def analyze_long_text(full_text, mode_prompt):
     p_bar.empty()
     return final.choices[0].message.content
 
-# --- ПРОМПТИ ---
+# --- СЛОВНИК ПРОМПТІВ ---
 prompts = {
-    "Судова практика та Позови": """Ти — провідний адвокат із 20-річним стажем. Твоє завдання: знайти слабкі місця в матеріалах та підсилити позицію клієнта. 
-    
-    Сформуй звіт за наступною суворою структурою:
+    "Судова практика та Позови": """Ти — провідний адвокат. Твоє завдання: знайти слабкі місця та підсилити позицію.
+    ### 🛡️ СТРАТЕГІЧНИЙ АНАЛІЗ
+    - Сильні сторони та критичні ризики.
+    ### ⚖️ ПРОЦЕСУАЛЬНА ПЕРЕВІРКА
+    - Аналіз порушень процедури (свідки, техніка, строки). Вкажи статті (напр. 251, 268 КУпАП).
+    ### 📖 РЕКОМЕНДОВАНА БАЗА
+    - Список статей та практик ВС, які треба додати.
+    ### 📝 ПЛАН ДІЙ
+    - Які конкретно клопотання подати та яких документів не вистачає.""",
 
-    ### 🛡️ СТРАТЕГІЧНИЙ АНАЛІЗ ПОЗИЦІЇ
-    - **Сильні сторони**: Які факти грають на користь клієнта?
-    - **Критичні ризики**: Де позиція найбільш вразлива?
-
-    ### ⚖️ ПЕРЕВІРКА ПРОЦЕСУАЛЬНОЇ ЧИСТОТИ (КЛЮЧОВЕ)
-    - Проаналізуй, чи не було порушено процедуру (наприклад, для ст. 130 КУпАП — чи були свідки, чи сертифікований Драгер, чи дотримано строки).
-    - Вкажи конкретні статті (наприклад, ст. 251, 268 КУпАП), які допоможуть визнати докази недопустимими.
-
-    ### 📖 РЕКОМЕНДОВАНА ЮРИДИЧНА БАЗА
-    - Склади список статей законів та постанов Пленуму ВС, які ТРЕБА додати до позову.
-    - Для кожної статті напиши 1 речення: "Це дозволить нам довести, що..."
-
-    ### 📝 ПЛАН ДІЙ (STEP-BY-STEP)
-    - Які конкретно клопотання подати (про виклик свідків, про витребування відео з боді-камер тощо)?
-    - Яких документів не вистачає в матеріалах справи прямо зараз?
-
-    **Стиль відповіді:** Професійний, гострий, орієнтований на результат. Уникай загальних фраз типу "ознайомтеся з нормами".""",
-
-    "Аналіз договору": """Ти — юридичний аудитор. Твоя мета — знайти "пастки" в договорі.
-    ### 🚩 ЧЕРВОНІ ПРАПОРЦІ (РИЗИКИ)
-    - Знайди приховані штрафи, пеню та умови одностороннього розірвання.
+    "Аналіз договору": """Ти — юрист-аудитор. Шукай "пастки".
+    ### 🚩 ЧЕРВОНІ ПРАПОРЦІ
+    - Приховані штрафи та вигідні іншій стороні умови.
     ### ⚖️ ПОСИЛЕННЯ ПОЗИЦІЇ
-    - Які статті ЦКУ/ГКУ захистять клієнта у разі форс-мажору (наприклад, ст. 617 ЦКУ)?
+    - Статті ЦКУ/ГКУ для захисту.
     ### ✏️ РЕКОМЕНДОВАНІ ПРАВКИ
-    - Напиши готові формулювання пунктів, які варто змінити (Було -> Стало)."""
+    - Конкретні зміни формулювань (Було -> Стало).""",
+    
+    "Загальна консультація": "Ти професійний юрист. Надай розгорнуту відповідь з посиланнями на законодавство."
 }
 
-# --- БІЧНА ПАНЕЛЬ (ВИПРАВЛЕНА) ---
+# --- БІЧНА ПАНЕЛЬ ---
 with st.sidebar:
     st.title("⚙️ Налаштування")
     if st.button("🧹 Очистити все"):
         clear_db()
-        # Повне очищення стану
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
@@ -178,7 +166,6 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("📜 Вічна історія")
     
-    # Отримуємо дані з БД (тепер додаємо ID)
     conn = sqlite3.connect('legalmind_history.db')
     c = conn.cursor()
     c.execute("SELECT id, title, result, content, query FROM history ORDER BY id DESC LIMIT 20")
@@ -189,7 +176,6 @@ with st.sidebar:
         st.info("Історія порожня")
     else:
         for h_id, h_title, h_res, h_cont, h_qry in history_rows:
-            # Використовуємо стабільний ключ на основі ID бази даних
             if st.button(f"📄 {h_title[:25]}...", key=f"btn_{h_id}", use_container_width=True):
                 st.session_state.analysis_result = h_res
                 st.session_state.full_content = h_cont
@@ -211,36 +197,42 @@ else:
     if url_input: content = read_url(url_input)
 
 if content:
-    if st.button("🚀 ПОЧАТИ АНАЛІЗ", use_container_width=True):
+    if st.button("🚀 ПОЧАТИ РОЗУМНИЙ АНАЛІЗ", use_container_width=True):
         try:
-            with st.spinner('🔍 AI працює...'):
+            with st.spinner('🔍 AI розпізнає документ та розробляє стратегію...'):
+                # 1. Визначення режиму
                 mode = auto_determine_mode(content)
-                st.toast(f"📂 Режим: {mode}")
-                analysis = analyze_long_text(content, prompts[mode])
+                st.toast(f"📂 Виявлено режим: {mode}")
                 
-                # Пошуковий запит для суду
+                # 2. Отримання промпта
+                current_prompt = prompts.get(mode, prompts["Загальна консультація"])
+                
+                # 3. Аналіз
+                analysis = analyze_long_text(content, current_prompt)
+                
+                # 4. Генерація пошукового запиту
                 s_query = ""
                 if "Суд" in mode:
-                    sg = client.chat.completions.create(
-                        messages=[{"role": "user", "content": f"3 ключові слова: {analysis[:200]}"}],
+                    s_gen = client.chat.completions.create(
+                        messages=[{"role": "user", "content": f"Напиши 3 ключові слова для пошуку схожих судових рішень (без лапок): {analysis[:400]}"}],
                         model="llama-3.1-8b-instant",
                     )
-                    s_query = sg.choices[0].message.content.strip().replace('"', '')
-                
-                # ЗБЕРЕЖЕННЯ В БАЗУ
+                    s_query = s_gen.choices[0].message.content.strip().replace('"', '')
+
+                # 5. Збереження
                 doc_name = url_input if source == "Посилання" else uploaded_file.name
                 save_to_history(doc_name, analysis, content, s_query)
                 
+                # 6. Оновлення стану
                 st.session_state.analysis_result = analysis
                 st.session_state.full_content = content
                 st.session_state.search_query = s_query
+                st.success("✅ Готово!")
+                st.rerun()
         except Exception as e:
-            st.error(f"Помилка: {e}")
+            st.error(f"Помилка аналізу: {e}")
 
-# --- ЛОГІКА ВІДОБРАЖЕННЯ (ПЕРЕВІРКА) ---
-# Переконайтеся, що блок виводу результатів знаходиться ПОЗА блоком "if content"
-# Це дозволить показувати дані з історії, навіть якщо зараз не завантажено новий файл
-
+# --- ВІДОБРАЖЕННЯ РЕЗУЛЬТАТІВ ---
 if st.session_state.analysis_result:
     st.markdown("---")
     st.subheader("📋 Результат аналізу")
@@ -256,7 +248,6 @@ if st.session_state.analysis_result:
         )
     with col2:
         if st.session_state.search_query:
-            # Очищення запиту для URL
             clean_q = st.session_state.search_query.split('\n')[0].strip().replace(' ', '+')
             st.link_button(
                 "🔍 Схожі рішення", 
@@ -264,16 +255,15 @@ if st.session_state.analysis_result:
                 use_container_width=True
             )
 
-    # Форма чату також має бути доступна для даних з історії
     st.markdown("---")
     with st.form("chat_history_form"):
-        user_q = st.text_input("Питання до цього документа:")
+        user_q = st.text_input("Поставити додаткове питання адвокату:")
         if st.form_submit_button("Запитати") and user_q:
-            with st.spinner('Шукаю відповідь...'):
+            with st.spinner('AI готує відповідь...'):
                 r = client.chat.completions.create(
                     messages=[
-                        {"role": "system", "content": "Ти юрист професіонал."},
-                        {"role": "user", "content": f"Текст: {st.session_state.full_content[:10000]}\nПитання: {user_q}"}
+                        {"role": "system", "content": "Ти досвідчений адвокат. Відповідай чітко на основі наданого тексту."},
+                        {"role": "user", "content": f"Текст документа: {st.session_state.full_content[:12000]}\nПитання клієнта: {user_q}"}
                     ],
                     model="llama-3.1-8b-instant",
                 )
