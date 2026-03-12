@@ -26,7 +26,7 @@ if 'full_content' not in st.session_state:
 if 'search_query' not in st.session_state:
     st.session_state.search_query = ""
 
-# --- ФУНКЦІЇ ОБРОБКИ ---
+# --- ФУНКЦІЇ ОБРОБКИ ФАЙЛІВ ---
 def read_file(uploaded_file):
     ext = os.path.splitext(uploaded_file.name)[1].lower()
     if ext == '.txt': return uploaded_file.read().decode("utf-8")
@@ -57,14 +57,14 @@ def create_docx(analysis_text):
     doc.save(bio)
     return bio.getvalue()
 
-# --- ЛОГІКА АВТОМАТИЗАЦІЇ ТА ШВИДКОСТІ ---
+# --- ЛОГІКА АВТОМАТИЗАЦІЇ ---
 
 def auto_determine_mode(text_preview):
-    """ШІ сам визначає тип документа"""
+    """ШІ сам визначає тип документа без вибору користувачем"""
     try:
         response = client.chat.completions.create(
             messages=[
-                {"role": "system", "content": "Ти — юридичний аналітик. Визнач тип документа. Відповідай ТІЛЬКИ ОДНИМ СЛОВОМ: 'Суд' (якщо рішення, позов), 'Договір' (якщо контракт), 'Корпоратив' (статут, протокол) або 'Загальне'."},
+                {"role": "system", "content": "Ти — юридичний аналітик. Визнач тип документа. Відповідай ТІЛЬКИ ОДНИМ СЛОВОМ: 'Суд', 'Договір', 'Корпоратив' або 'Загальне'."},
                 {"role": "user", "content": text_preview[:3000]}
             ],
             model="llama-3.1-8b-instant",
@@ -80,8 +80,8 @@ def auto_determine_mode(text_preview):
         return "Загальна консультація"
 
 def analyze_long_text(full_text, mode_prompt):
-    """Прискорений аналіз з більшими шматками та меншими паузами"""
-    chunk_size = 7000 # Збільшено для швидкості
+    """Швидкий аналіз великих текстів"""
+    chunk_size = 7500 
     chunks = [full_text[i:i + chunk_size] for i in range(0, len(full_text), chunk_size)]
     
     summaries = []
@@ -95,27 +95,23 @@ def analyze_long_text(full_text, mode_prompt):
         try:
             response = client.chat.completions.create(
                 messages=[
-                    {"role": "system", "content": "Ти — помічник юриста. Випиши тезисно головне, факти та статті."},
+                    {"role": "system", "content": "Ти — помічник юриста. Випиши головне, статті та факти."},
                     {"role": "user", "content": chunk}
                 ],
                 model="llama-3.1-8b-instant",
             )
             summaries.append(response.choices[0].message.content)
-            
             if idx < len(chunks) - 1:
-                time.sleep(2.5) # СКОРОЧЕНА ПАУЗА для швидкості
-                
+                time.sleep(2.2) # Оптимальна пауза для швидкості
         except Exception as e:
             if "rate_limit_exceeded" in str(e).lower():
-                status_text.warning("⚠️ Ліміт перевищено. Пауза 10 сек...")
-                time.sleep(10) # Автоматичний відкат при перевантаженні
+                status_text.warning("⚠️ Ліміт. Пауза 10 сек...")
+                time.sleep(10)
             else:
                 st.error(f"Помилка: {e}")
                 break
     
-    status_text.success("✅ Текст опрацьовано! Формую фінальний звіт...")
     combined_context = "\n".join(summaries)
-    
     final_response = client.chat.completions.create(
         messages=[
             {"role": "system", "content": mode_prompt},
@@ -123,13 +119,15 @@ def analyze_long_text(full_text, mode_prompt):
         ],
         model="llama-3.1-8b-instant",
     )
+    status_text.empty()
+    progress_bar.empty()
     return final_response.choices[0].message.content
 
 # --- ПРОМПТИ ---
 prompts = {
     "Аналіз договору": "### ⚖️ ЮРИДИЧНА БАЗА\n- (статті ЦКУ/ГКУ)\n### 🚩 РИЗИКИ\n- (тезисно)\n### 📝 ПОРАДИ\n- (що змінити)",
-    "Судова практика та Позови": "### ⚖️ ЮРИДИЧНА БАЗА (СТАТТІ)\n- Випиши кожну статтю окремим пунктом з назвою\n### 📌 ОСНОВНІ ТЕЗИ\n- (головні аргументи суду пунктами)\n### 📑 СУТЬ СПРАВИ\n- (коротко обставини)",
-    "Корпоративні документи": "Проаналізуй документ на відповідність Закону про ТОВ. Використовуй списки.",
+    "Судова практика та Позови": "### ⚖️ ЮРИДИЧНА БАЗА (СТАТТІ)\n- Випиши кожну статтю окремим пунктом з назвою\n### 📌 ОСНОВНІ ТЕЗИ\n- (головні аргументи суду)\n### 📑 СУТЬ СПРАВИ\n- (коротко)",
+    "Корпоративні документи": "Проаналізуй документ на відповідність Закону про ТОВ.",
     "Загальна консультація": "Надай юридичну відповідь зі статтями законів у вигляді списку."
 }
 
@@ -137,9 +135,10 @@ prompts = {
 st.title("⚖️ LegalMind: Ваш AI-Юрист")
 st.markdown("---")
 
+# ЧИСТА БІЧНА ПАНЕЛЬ
 with st.sidebar:
     st.title("⚙️ Налаштування")
-    if st.button("Очистити все"):
+    if st.button("🧹 Очистити все"):
         for key in st.session_state.keys(): del st.session_state[key]
         st.rerun()
 
@@ -154,36 +153,36 @@ else:
     if url_input: content = read_url(url_input)
 
 if content:
-    if st.button("🚀 ПОЧАТИ АНАЛІЗ", use_container_width=True):
+    # ТІЛЬКИ ОДНА КНОПКА БЕЗ ВИБОРУ РЕЖИМІВ
+    if st.button("🚀 ПОЧАТИ РОЗУМНИЙ АНАЛІЗ", use_container_width=True):
         try:
-            with st.spinner('🔍 Визначаю тип документа та аналізую...'):
-                # 1. АВТО-ВИЗНАЧЕННЯ
+            with st.spinner('🔍 AI розпізнає документ та проводить аналіз...'):
                 mode = auto_determine_mode(content)
-                st.toast(f"Виявлено режим: {mode}")
+                st.toast(f"📂 Виявлено тип: {mode}")
                 
-                # 2. АНАЛІЗ
                 analysis = analyze_long_text(content, prompts[mode])
                 st.session_state.analysis_result = analysis
                 st.session_state.full_content = content
                 
-                # 3. ПОШУК (якщо суд)
                 if "Суд" in mode:
                     s_gen = client.chat.completions.create(
-                        messages=[{"role": "user", "content": f"3-4 ключові слова для пошуку практики: {analysis[:300]}"}],
+                        messages=[{"role": "user", "content": f"3-4 ключові слова для Google (без лапок): {analysis[:300]}"}],
                         model="llama-3.1-8b-instant",
                     )
                     st.session_state.search_query = s_gen.choices[0].message.content.strip().replace('"', '')
+                else:
+                    st.session_state.search_query = ""
         except Exception as e:
             st.error(f"Помилка: {e}")
 
-# --- ВИВІД ---
+# --- ВИВІД РЕЗУЛЬТАТІВ ---
 if st.session_state.analysis_result:
-    st.subheader("📋 Результат")
+    st.subheader("📋 Результат аналізу")
     st.markdown(st.session_state.analysis_result)
 
     col1, col2 = st.columns(2)
     with col1:
-        st.download_button("📥 Завантажити .docx", data=create_docx(st.session_state.analysis_result), file_name="Report.docx", use_container_width=True)
+        st.download_button("📥 Завантажити .docx", data=create_docx(st.session_state.analysis_result), file_name="LegalReport.docx", use_container_width=True)
     with col2:
         if st.session_state.search_query:
             clean_q = st.session_state.search_query.split('\n')[0].replace(' ', '+')
