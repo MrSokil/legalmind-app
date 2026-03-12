@@ -140,25 +140,35 @@ prompts = {
     "Загальна консультація": "Юридична відповідь списком."
 }
 
-# --- БІЧНА ПАНЕЛЬ З ВІЧНОЮ ІСТОРІЄЮ ---
+# --- БІЧНА ПАНЕЛЬ (ВИПРАВЛЕНА) ---
 with st.sidebar:
     st.title("⚙️ Налаштування")
-    if st.button("🧹 Очистити все (та історію)"):
+    if st.button("🧹 Очистити все"):
         clear_db()
-        for key in st.session_state.keys(): del st.session_state[key]
+        # Повне очищення стану
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
         st.rerun()
     
     st.markdown("---")
     st.subheader("📜 Вічна історія")
-    history_data = get_history()
-    if not history_data:
+    
+    # Отримуємо дані з БД (тепер додаємо ID)
+    conn = sqlite3.connect('legalmind_history.db')
+    c = conn.cursor()
+    c.execute("SELECT id, title, result, content, query FROM history ORDER BY id DESC LIMIT 20")
+    history_rows = c.fetchall()
+    conn.close()
+
+    if not history_rows:
         st.info("Історія порожня")
     else:
-        for title, res, cont, qry in history_data:
-            if st.button(f"📄 {title[:25]}...", key=f"h_{title}_{time.time()}", use_container_width=True):
-                st.session_state.analysis_result = res
-                st.session_state.full_content = cont
-                st.session_state.search_query = qry
+        for h_id, h_title, h_res, h_cont, h_qry in history_rows:
+            # Використовуємо стабільний ключ на основі ID бази даних
+            if st.button(f"📄 {h_title[:25]}...", key=f"btn_{h_id}", use_container_width=True):
+                st.session_state.analysis_result = h_res
+                st.session_state.full_content = h_cont
+                st.session_state.search_query = h_qry
                 st.rerun()
 
 # --- ГОЛОВНИЙ ІНТЕРФЕЙС ---
@@ -176,7 +186,7 @@ else:
     if url_input: content = read_url(url_input)
 
 if content:
-    if st.button("🚀 ПОЧАТИ РОЗУМНИЙ АНАЛІЗ", use_container_width=True):
+    if st.button("🚀 ПОЧАТИ АНАЛІЗ", use_container_width=True):
         try:
             with st.spinner('🔍 AI працює...'):
                 mode = auto_determine_mode(content)
@@ -202,25 +212,44 @@ if content:
         except Exception as e:
             st.error(f"Помилка: {e}")
 
-# --- ВИВІД ---
+# --- ЛОГІКА ВІДОБРАЖЕННЯ (ПЕРЕВІРКА) ---
+# Переконайтеся, що блок виводу результатів знаходиться ПОЗА блоком "if content"
+# Це дозволить показувати дані з історії, навіть якщо зараз не завантажено новий файл
+
 if st.session_state.analysis_result:
+    st.markdown("---")
     st.subheader("📋 Результат аналізу")
     st.markdown(st.session_state.analysis_result)
     
     col1, col2 = st.columns(2)
     with col1:
-        st.download_button("📥 Завантажити .docx", data=create_docx(st.session_state.analysis_result), file_name="LegalReport.docx", use_container_width=True)
+        st.download_button(
+            "📥 Завантажити .docx", 
+            data=create_docx(st.session_state.analysis_result), 
+            file_name="LegalReport.docx", 
+            use_container_width=True
+        )
     with col2:
         if st.session_state.search_query:
-            cq = st.session_state.search_query.split('\n')[0].replace(' ', '+')
-            st.link_button("🔍 Схожі рішення", f"https://www.google.com/search?q=site:reyestr.court.gov.ua+{cq}", use_container_width=True)
-
-    st.markdown("---")
-    with st.form("chat_form"):
-        user_q = st.text_input("Питання до документа:")
-        if st.form_submit_button("Запитати") and user_q:
-            r = client.chat.completions.create(
-                messages=[{"role": "system", "content": "Ти юрист."}, {"role": "user", "content": f"Текст: {st.session_state.full_content[:10000]}\nПитання: {user_q}"}],
-                model="llama-3.1-8b-instant",
+            # Очищення запиту для URL
+            clean_q = st.session_state.search_query.split('\n')[0].strip().replace(' ', '+')
+            st.link_button(
+                "🔍 Схожі рішення", 
+                f"https://www.google.com/search?q=site:reyestr.court.gov.ua+{clean_q}", 
+                use_container_width=True
             )
-            st.info(f"💡 {r.choices[0].message.content}")
+
+    # Форма чату також має бути доступна для даних з історії
+    st.markdown("---")
+    with st.form("chat_history_form"):
+        user_q = st.text_input("Питання до цього документа:")
+        if st.form_submit_button("Запитати") and user_q:
+            with st.spinner('Шукаю відповідь...'):
+                r = client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": "Ти юрист професіонал."},
+                        {"role": "user", "content": f"Текст: {st.session_state.full_content[:10000]}\nПитання: {user_q}"}
+                    ],
+                    model="llama-3.1-8b-instant",
+                )
+                st.info(f"💡 {r.choices[0].message.content}")
